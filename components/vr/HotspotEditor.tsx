@@ -1,14 +1,23 @@
 'use client';
 
 import { useState } from 'react';
-import type { EditableHotspot } from '@/lib/vr/engine';
+import type { EditableExperience, EditableHotspot } from '@/lib/vr/engine';
+import type { ExperienceHotspot, ExperiencePiece } from '@/types/vr';
 import { scenes } from '@/data/scenes';
 import { getFloorIdForScene } from '@/data/floors';
+import { products } from '@/data/products';
 import {
   clearHotspotOverrides,
   saveHotspotOverrides,
+  saveExperienceOverrides,
   type HotspotOverrides,
+  type ExperienceOverrides,
 } from '@/lib/vr/hotspotOverrides';
+
+type ExperiencePatch = Partial<Omit<ExperienceHotspot, 'id' | 'type'>>;
+
+/** Catalogue products offered when adding a featured piece. */
+const PRODUCT_OPTIONS = products.map((p) => ({ id: p.id, name: p.name }));
 
 /** Every scene as a { id, label } option for target pickers. */
 const SCENE_OPTIONS: { id: string; label: string }[] = scenes.map((s) => {
@@ -36,6 +45,15 @@ interface HotspotEditorProps {
   onSetTarget: (id: string, targetSceneId: string) => void;
   /** Rename a hotspot (the small label shown on the pad). */
   onSetLabel: (id: string, label: string) => void;
+
+  /* Experience (persona) hotspots. */
+  experiences: EditableExperience[];
+  onAddExperience: () => void;
+  onUpdateExperience: (id: string, patch: ExperiencePatch) => void;
+  onRemoveExperience: (id: string) => void;
+  onDuplicateExperience: (id: string) => void;
+  onToggleExperienceActive: (id: string, active: boolean) => void;
+  onPreviewExperience: (id: string) => void;
 }
 
 const STEPS = [0.1, 0.25, 0.5, 1] as const;
@@ -63,6 +81,13 @@ export function HotspotEditor({
   onRemoveHotspot,
   onSetTarget,
   onSetLabel,
+  experiences,
+  onAddExperience,
+  onUpdateExperience,
+  onRemoveExperience,
+  onDuplicateExperience,
+  onToggleExperienceActive,
+  onPreviewExperience,
 }: HotspotEditorProps) {
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -72,8 +97,9 @@ export function HotspotEditor({
   const [addTarget, setAddTarget] = useState<string>(
     () => SCENE_OPTIONS.find((o) => o.id !== currentSceneId)?.id ?? SCENE_OPTIONS[0]?.id ?? '',
   );
+  const [expandedExp, setExpandedExp] = useState<string | null>(null);
 
-  const exportText = generateFloorsSnippet();
+  const exportText = generateFloorsSnippet(experiences, currentSceneId);
 
   const copy = async () => {
     try {
@@ -100,6 +126,28 @@ export function HotspotEditor({
       }));
     }
     saveHotspotOverrides(map);
+
+    // Persist experience hotspots (all scenes) under their own key.
+    const expMap: ExperienceOverrides = {};
+    for (const s of scenes) {
+      const exps = s.hotspots.filter(
+        (h): h is ExperienceHotspot => h.type === 'experience',
+      );
+      if (exps.length === 0) continue;
+      expMap[s.id] = exps.map((e) => ({
+        id: e.id,
+        name: e.name,
+        label: e.label,
+        category: e.category,
+        description: e.description,
+        position: { x: r(e.position.x), y: r(e.position.y), z: r(e.position.z) },
+        pieces: e.pieces.map((p) => ({ ...p })),
+        active: e.active !== false,
+        ...(e.color ? { color: e.color } : {}),
+      }));
+    }
+    saveExperienceOverrides(expMap);
+
     setSaved(true);
     setTimeout(() => setSaved(false), 1600);
   };
@@ -260,6 +308,38 @@ export function HotspotEditor({
         ))}
       </div>
 
+      {/* Experience (persona) hotspots. */}
+      <div className="mt-2 border-t border-white/10 pt-2">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-widest text-qween-gold-soft">
+            Experience Hotspots
+          </span>
+          <button
+            onClick={onAddExperience}
+            className="rounded border border-qween-line bg-qween-gold/90 px-2 py-0.5 text-[10px] uppercase tracking-widest text-qween-void transition hover:bg-qween-gold"
+          >
+            + New
+          </button>
+        </div>
+        {experiences.length === 0 && (
+          <div className="text-qween-mist">no experience hotspots in this scene</div>
+        )}
+        {experiences.map((e) => (
+          <ExperienceRow
+            key={e.id}
+            exp={e}
+            step={step}
+            expanded={expandedExp === e.id}
+            onToggleExpand={() => setExpandedExp(expandedExp === e.id ? null : e.id)}
+            onUpdate={onUpdateExperience}
+            onRemove={onRemoveExperience}
+            onDuplicate={onDuplicateExperience}
+            onToggleActive={onToggleExperienceActive}
+            onPreview={onPreviewExperience}
+          />
+        ))}
+      </div>
+
       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-white/10 pt-2">
         <button
           onClick={save}
@@ -294,6 +374,192 @@ export function HotspotEditor({
 }
 
 /** Name row: a text field committing on blur / Enter. */
+/** One experience hotspot row: summary + expandable editor. */
+function ExperienceRow({
+  exp,
+  step,
+  expanded,
+  onToggleExpand,
+  onUpdate,
+  onRemove,
+  onDuplicate,
+  onToggleActive,
+  onPreview,
+}: {
+  exp: EditableExperience;
+  step: number;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onUpdate: (id: string, patch: ExperiencePatch) => void;
+  onRemove: (id: string) => void;
+  onDuplicate: (id: string) => void;
+  onToggleActive: (id: string, active: boolean) => void;
+  onPreview: (id: string) => void;
+}) {
+  const setPiece = (i: number, patch: Partial<ExperiencePiece>) => {
+    const pieces = exp.pieces.map((p, idx) => (idx === i ? { ...p, ...patch } : p));
+    onUpdate(exp.id, { pieces });
+  };
+  const addPiece = () => {
+    if (exp.pieces.length >= 4) return;
+    onUpdate(exp.id, { pieces: [...exp.pieces, { name: 'New Piece', image: 'placeholder://ring' }] });
+  };
+  const removePiece = (i: number) => {
+    if (exp.pieces.length <= 1) return;
+    onUpdate(exp.id, { pieces: exp.pieces.filter((_, idx) => idx !== i) });
+  };
+
+  return (
+    <div className="mb-2 rounded border border-white/10 p-2">
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={onToggleExpand}
+          className="min-w-0 flex-1 text-left"
+          title="Edit"
+        >
+          <span className="text-qween-gold-soft">{expanded ? '▾' : '▸'} </span>
+          <span className="text-qween-diamond">{exp.name || '(unnamed)'}</span>
+          <span className="ml-1 text-qween-mist">
+            · {exp.category} / {exp.pieces.length} pieces
+          </span>
+        </button>
+        <span className={`text-[9px] uppercase ${exp.active ? 'text-emerald-400' : 'text-qween-mist'}`}>
+          {exp.active ? 'Active' : 'Off'}
+        </span>
+      </div>
+
+      <div className="mt-1 flex flex-wrap gap-1">
+        <MiniBtn label="Preview" onClick={() => onPreview(exp.id)} />
+        <MiniBtn label={exp.active ? 'Disable' : 'Enable'} onClick={() => onToggleActive(exp.id, !exp.active)} />
+        <MiniBtn label="Duplicate" onClick={() => onDuplicate(exp.id)} />
+        <MiniBtn label="Delete" onClick={() => onRemove(exp.id)} />
+      </div>
+
+      {expanded && (
+        <div className="mt-2 border-t border-white/10 pt-2">
+          <TextField label="Name" value={exp.name} onSet={(v) => onUpdate(exp.id, { name: v })} />
+          <TextField label="Label" value={exp.label} onSet={(v) => onUpdate(exp.id, { label: v.toUpperCase() })} />
+          <TextField label="Category" value={exp.category} onSet={(v) => onUpdate(exp.id, { category: v })} />
+          <TextField
+            label="Desc"
+            value={exp.description}
+            multiline
+            onSet={(v) => onUpdate(exp.id, { description: v.slice(0, 180) })}
+          />
+
+          <div className="mt-2 mb-1 text-qween-mist">featured pieces ({exp.pieces.length}/4):</div>
+          {exp.pieces.map((p, i) => (
+            <div key={i} className="mb-1 rounded border border-white/10 p-1.5">
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={p.productId ?? ''}
+                  onChange={(ev) => {
+                    const id = ev.target.value || undefined;
+                    const prod = PRODUCT_OPTIONS.find((o) => o.id === id);
+                    setPiece(i, { productId: id, name: p.name || prod?.name });
+                  }}
+                  title="Link a catalogue product (image / 3D / PDP)"
+                  className="min-w-0 flex-1 rounded border border-white/10 bg-black/60 px-1 py-0.5 text-qween-diamond outline-none focus:border-qween-gold/60"
+                >
+                  <option value="">— custom —</option>
+                  {PRODUCT_OPTIONS.map((o) => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => removePiece(i)}
+                  className="rounded border border-qween-line px-1.5 text-[10px] text-qween-mist hover:bg-white/10"
+                >
+                  ✕
+                </button>
+              </div>
+              <TextField label="Name" value={p.name ?? ''} onSet={(v) => setPiece(i, { name: v })} />
+              <TextField label="Meta" value={p.meta ?? ''} onSet={(v) => setPiece(i, { meta: v })} />
+              {!p.productId && (
+                <TextField label="Image" value={p.image ?? ''} onSet={(v) => setPiece(i, { image: v })} />
+              )}
+            </div>
+          ))}
+          {exp.pieces.length < 4 && <MiniBtn label="+ Piece" onClick={addPiece} />}
+
+          <div className="mt-2 mb-1 text-qween-mist">position:</div>
+          {(['x', 'y', 'z'] as const).map((axis) => (
+            <AxisRow
+              key={axis}
+              axis={axis}
+              value={exp.position[axis]}
+              onDec={() => onUpdate(exp.id, { position: { ...exp.position, [axis]: r(exp.position[axis] - step) } })}
+              onInc={() => onUpdate(exp.id, { position: { ...exp.position, [axis]: r(exp.position[axis] + step) } })}
+              onSet={(v) => onUpdate(exp.id, { position: { ...exp.position, [axis]: v } })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniBtn({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="rounded border border-qween-line px-1.5 py-0.5 text-[10px] text-qween-diamond transition hover:bg-white/10"
+    >
+      {label}
+    </button>
+  );
+}
+
+/** A labelled text field committing on blur / Enter (single or multi-line). */
+function TextField({
+  label,
+  value,
+  onSet,
+  multiline,
+}: {
+  label: string;
+  value: string;
+  onSet: (v: string) => void;
+  multiline?: boolean;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    onSet(draft);
+    setDraft(null);
+  };
+  const common = {
+    value: draft ?? value,
+    onChange: (e: { target: { value: string } }) => setDraft(e.target.value),
+    onFocus: () => setDraft(value),
+    onBlur: commit,
+    className:
+      'min-w-0 flex-1 rounded border border-white/10 bg-black/60 px-1.5 py-0.5 text-qween-diamond outline-none focus:border-qween-gold/60',
+  };
+  return (
+    <div className="mt-1 flex items-start gap-1.5">
+      <span className="mt-0.5 w-10 shrink-0 text-qween-mist">{label}</span>
+      {multiline ? (
+        <textarea
+          {...common}
+          rows={2}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setDraft(null);
+          }}
+        />
+      ) : (
+        <input
+          {...common}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+            if (e.key === 'Escape') setDraft(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 function NameRow({ value, onSet }: { value: string; onSet: (v: string) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
   const commit = () => {
@@ -410,7 +676,10 @@ function targetNode(sceneId: string): string {
  * Grouped by scene; one line per hotspot. `style` is emitted only when it
  * isn't the default `'floor'`.
  */
-function generateFloorsSnippet(): string {
+function generateFloorsSnippet(
+  experiences: EditableExperience[],
+  currentSceneId: string | null,
+): string {
   const out: string[] = ['// QWEEN hotspot positions — paste into data/floors.ts'];
   for (const s of scenes) {
     const floorId = getFloorIdForScene(s.id);
@@ -434,7 +703,49 @@ function generateFloorsSnippet(): string {
       );
     }
   }
+
+  // Experience hotspots for the current scene → an `experiences:` block.
+  if (experiences.length > 0 && currentSceneId) {
+    const floorId = getFloorIdForScene(currentSceneId);
+    const nodeId = floorId ? currentSceneId.slice(floorId.length + 1) : currentSceneId;
+    out.push('', `// experiences for ${floorId} · ${nodeId} — into that node's config`, 'experiences: [');
+    for (const e of experiences) {
+      const shortId = e.id.replace(`${currentSceneId}-exp-`, '');
+      const pieces = e.pieces
+        .map((p) => {
+          const parts: string[] = [];
+          if (p.productId) parts.push(`productId: '${p.productId}'`);
+          if (p.name) parts.push(`name: '${esc(p.name)}'`);
+          if (p.image) parts.push(`image: '${esc(p.image)}'`);
+          if (p.meta) parts.push(`meta: '${esc(p.meta)}'`);
+          return `        { ${parts.join(', ')} }`;
+        })
+        .join(',\n');
+      const color = e.color ? `\n    color: '${e.color}',` : '';
+      const active = e.active ? '' : '\n    active: false,';
+      out.push(
+        `  {
+    id: '${shortId}',
+    name: '${esc(e.name)}',
+    label: '${esc(e.label)}',
+    category: '${esc(e.category)}',
+    description:
+      '${esc(e.description)}',
+    position: { x: ${r(e.position.x)}, y: ${r(e.position.y)}, z: ${r(e.position.z)} },${color}${active}
+    pieces: [
+${pieces}
+    ],
+  },`,
+      );
+    }
+    out.push('],');
+  }
+
   return out.join('\n');
+}
+
+function esc(s: string): string {
+  return s.replace(/'/g, "\\'");
 }
 
 function r(n: number): number {

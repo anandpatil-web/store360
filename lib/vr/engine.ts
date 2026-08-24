@@ -1,5 +1,12 @@
 import * as THREE from 'three';
-import type { CameraOrientation, NavigationHotspot, VRHotspot, VRScene } from '@/types/vr';
+import type {
+  CameraOrientation,
+  ExperienceHotspot,
+  ExperiencePiece,
+  NavigationHotspot,
+  VRHotspot,
+  VRScene,
+} from '@/types/vr';
 import { getProductById } from '@/data/products';
 import { DEFAULT_SCENE_ID, getSceneById } from '@/data/scenes';
 import { TextureManager } from './textureManager';
@@ -9,7 +16,7 @@ import { ProductPanel3D, type PanelAction } from './productPanel';
 import { ExperienceCard3D, type CardAction } from './experienceCard3D';
 import { ViewControlsPanel3D, type ViewControlAction } from './viewControlsPanel3D';
 import { NadirBlur } from './nadirBlur';
-import { loadHotspotOverrides } from './hotspotOverrides';
+import { loadHotspotOverrides, loadExperienceOverrides } from './hotspotOverrides';
 import {
   VR_CONFIG,
   DEG2RAD,
@@ -46,6 +53,20 @@ export interface EditableHotspot {
   position: { x: number; y: number; z: number };
 }
 
+/** One experience (persona) hotspot's editable state, for the Tools section. */
+export interface EditableExperience {
+  id: string;
+  sceneId: string;
+  name: string;
+  label: string;
+  category: string;
+  description: string;
+  active: boolean;
+  color?: string;
+  position: { x: number; y: number; z: number };
+  pieces: ExperiencePiece[];
+}
+
 /** Current values of the live-tunable "View Controls" debug panel (§ViewControlsPanel). */
 export interface ViewTuning {
   eyeHeight: number;
@@ -68,6 +89,8 @@ export interface EngineCallbacks {
   /** Desktop hotspot editor (§?edit=true): current scene's hotspots + live
    *  positions, emitted on scene load and while dragging. */
   onEditableHotspots?: (hotspots: EditableHotspot[]) => void;
+  /** Experience (persona) hotspots in the current scene, for the Tools section. */
+  onEditableExperiences?: (experiences: EditableExperience[]) => void;
   /** High-level analytics passthrough — engine reports what happened. */
   onEvent?: (event: string, payload?: Record<string, unknown>) => void;
 }
@@ -261,7 +284,10 @@ export class VRSceneEngine {
           this.cb.onEvent?.('scene_viewed', { sceneId: s.id });
           this.nadirBlur.setTexture(this.sceneManager.currentTexture);
           if (this.debug) this.rebuildDebugGizmos(s);
-          if (this.editMode) this.emitEditable();
+          if (this.editMode) {
+            this.emitEditable();
+            this.emitEditableExperiences();
+          }
         },
         onTransitionStart: (from, to) => {
           this.cb.onTransitionStart?.(from, to);
@@ -403,7 +429,10 @@ export class VRSceneEngine {
     if (this.sceneManager.currentScene) {
       this.hotspots.setScene(this.sceneManager.currentScene);
     }
-    if (on) this.emitEditable();
+    if (on) {
+      this.emitEditable();
+      this.emitEditableExperiences();
+    }
   }
 
   /** Current scene's navigation hotspots with their live (possibly edited)
@@ -436,18 +465,45 @@ export class VRSceneEngine {
    *  into data/floors.ts. A saved scene fully replaces its config-defined
    *  navigation pads; product hotspots are left untouched. */
   private applyHotspotOverrides(scene: VRScene): void {
-    const saved = loadHotspotOverrides()[scene.id];
-    if (!saved || saved.length === 0) return;
-    const nonNav = scene.hotspots.filter((h) => h.type !== 'navigation');
-    const navs: NavigationHotspot[] = saved.map((s) => ({
-      id: `${scene.id}-nav-${this.hotspotSeq++}`,
-      type: 'navigation',
-      label: s.label ?? 'Explore',
-      targetSceneId: s.targetSceneId,
-      position: { x: s.position.x, y: s.position.y, z: s.position.z },
-      style: s.style,
-    }));
-    scene.hotspots = [...navs, ...nonNav];
+    const savedNav = loadHotspotOverrides()[scene.id];
+    const savedExp = loadExperienceOverrides()[scene.id];
+    if ((!savedNav || savedNav.length === 0) && !savedExp) return;
+
+    let next = scene.hotspots;
+
+    if (savedNav && savedNav.length > 0) {
+      const nonNav = next.filter((h) => h.type !== 'navigation');
+      const navs: NavigationHotspot[] = savedNav.map((s) => ({
+        id: `${scene.id}-nav-${this.hotspotSeq++}`,
+        type: 'navigation',
+        label: s.label ?? 'Explore',
+        targetSceneId: s.targetSceneId,
+        position: { x: s.position.x, y: s.position.y, z: s.position.z },
+        style: s.style,
+      }));
+      next = [...navs, ...nonNav];
+    }
+
+    if (savedExp) {
+      const nonExp = next.filter((h) => h.type !== 'experience');
+      // In edit mode we keep inactive experiences too (so they stay editable);
+      // the live build filters them.
+      const exps: ExperienceHotspot[] = savedExp.map((e) => ({
+        id: e.id,
+        type: 'experience',
+        name: e.name,
+        label: e.label,
+        category: e.category,
+        description: e.description,
+        pieces: e.pieces.map((p) => ({ ...p })),
+        position: { x: e.position.x, y: e.position.y, z: e.position.z },
+        active: e.active !== false,
+        ...(e.color ? { color: e.color } : {}),
+      }));
+      next = [...nonExp, ...exps];
+    }
+
+    scene.hotspots = next;
     this.hotspots.setScene(scene);
   }
 
@@ -1276,6 +1332,120 @@ export class VRSceneEngine {
     }, 220);
     this.cb.onEvent?.('experience_hotspot_closed', { hotspotId: id });
     this.activeExperienceId = null;
+  }
+
+  /* --------------------- experience editing (Tools) --------------------- */
+
+  private get sceneExperiences(): ExperienceHotspot[] {
+    const scene = this.sceneManager.currentScene;
+    if (!scene) return [];
+    return scene.hotspots.filter((h): h is ExperienceHotspot => h.type === 'experience');
+  }
+
+  /** Current scene's experience hotspots for the Tools list/editor. */
+  getEditableExperiences(): EditableExperience[] {
+    const scene = this.sceneManager.currentScene;
+    if (!scene) return [];
+    return this.sceneExperiences.map((h) => ({
+      id: h.id,
+      sceneId: scene.id,
+      name: h.name,
+      label: h.label,
+      category: h.category,
+      description: h.description,
+      active: h.active !== false,
+      color: h.color,
+      position: { x: round(h.position.x), y: round(h.position.y), z: round(h.position.z) },
+      pieces: h.pieces.map((p) => ({ ...p })),
+    }));
+  }
+
+  private emitEditableExperiences(): void {
+    this.cb.onEditableExperiences?.(this.getEditableExperiences());
+  }
+
+  /** Tools: add a new experience hotspot to the current scene. */
+  addExperience(): string | null {
+    const scene = this.sceneManager.currentScene;
+    if (!scene) return null;
+    const id = `${scene.id}-exp-${Date.now().toString(36)}`;
+    const h: ExperienceHotspot = {
+      id,
+      type: 'experience',
+      name: 'New Experience',
+      label: 'EXPERIENCE',
+      category: 'Persona',
+      description: 'A curated selection — describe this persona in two elegant lines.',
+      pieces: [
+        { name: 'Piece One', image: 'placeholder://ring' },
+        { name: 'Piece Two', image: 'placeholder://necklace' },
+      ],
+      position: { x: 0, y: -1.5, z: -3 },
+      active: true,
+    };
+    scene.hotspots = [...scene.hotspots, h];
+    this.hotspots.setScene(scene);
+    this.emitEditableExperiences();
+    return id;
+  }
+
+  /** Tools: update fields of an experience hotspot. */
+  updateExperience(id: string, patch: Partial<Omit<ExperienceHotspot, 'id' | 'type'>>): void {
+    const h = this.sceneExperiences.find((x) => x.id === id);
+    if (!h) return;
+    const movedTo = patch.position;
+    Object.assign(h, patch);
+    if (movedTo) this.hotspots.moveHotspotById(id, movedTo);
+    // Rebuild markers only when a label-affecting field changed (avoid churn on
+    // pure position nudges, which moveHotspotById already handled).
+    if (patch.label !== undefined || patch.color !== undefined || patch.active !== undefined) {
+      const scene = this.sceneManager.currentScene;
+      if (scene) this.hotspots.setScene(scene);
+    }
+    // If its card is open, refresh the content live.
+    if (this.activeExperienceId === id && this.experienceCard.isOpen()) {
+      this.previewExperience(id);
+    }
+    this.emitEditableExperiences();
+  }
+
+  /** Tools: remove an experience hotspot. */
+  removeExperience(id: string): void {
+    const scene = this.sceneManager.currentScene;
+    if (!scene) return;
+    if (this.activeExperienceId === id) this.experienceCard.forceHide();
+    scene.hotspots = scene.hotspots.filter((h) => h.id !== id);
+    this.hotspots.setScene(scene);
+    this.emitEditableExperiences();
+  }
+
+  /** Tools: duplicate an experience hotspot (offset slightly). */
+  duplicateExperience(id: string): string | null {
+    const scene = this.sceneManager.currentScene;
+    const src = this.sceneExperiences.find((x) => x.id === id);
+    if (!scene || !src) return null;
+    const copy: ExperienceHotspot = {
+      ...src,
+      id: `${scene.id}-exp-${Date.now().toString(36)}`,
+      name: `${src.name} Copy`,
+      pieces: src.pieces.map((p) => ({ ...p })),
+      position: { x: src.position.x + 0.6, y: src.position.y, z: src.position.z + 0.6 },
+    };
+    scene.hotspots = [...scene.hotspots, copy];
+    this.hotspots.setScene(scene);
+    this.emitEditableExperiences();
+    return copy.id;
+  }
+
+  /** Tools: toggle active/inactive. */
+  setExperienceActive(id: string, active: boolean): void {
+    this.updateExperience(id, { active });
+  }
+
+  /** Tools: preview — raise the card for this experience. */
+  previewExperience(id: string): void {
+    const h = this.sceneExperiences.find((x) => x.id === id);
+    if (h) this.openExperience(h);
   }
 
   private handlePanelAction(action: PanelAction): void {
