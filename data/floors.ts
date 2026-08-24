@@ -1,4 +1,4 @@
-import type { CameraOrientation, Vec3 } from '@/types/vr';
+import type { CameraOrientation, ExperiencePiece, Vec3 } from '@/types/vr';
 
 /**
  * Centralised floor / node navigation graph for the multi-floor showroom.
@@ -33,6 +33,27 @@ export interface FloorHotspotConfig {
   color?: string;
 }
 
+/**
+ * A Persona / Experience discovery point placed in a scene (§Experience
+ * Hotspots). Managed from the Tools section like navigation pads; not
+ * hardcoded into the renderer.
+ */
+export interface ExperienceHotspotConfig {
+  /** Stable id (within the node). Combined with the scene id for uniqueness. */
+  id: string;
+  name: string;
+  label: string;
+  category: string;
+  description: string;
+  pieces: ExperiencePiece[];
+  /** Floor-anchored world position (y ≈ −eye height). */
+  position: Vec3;
+  color?: string;
+  view?: CameraOrientation;
+  /** Defaults to true; inactive hotspots are hidden but stay editable. */
+  active?: boolean;
+}
+
 export interface FloorNodeConfig {
   /** Filename under /public/vr/panoramas/. */
   image: string;
@@ -45,6 +66,8 @@ export interface FloorNodeConfig {
    */
   initialCamera?: CameraOrientation;
   hotspots: FloorHotspotConfig[];
+  /** Persona / Experience discovery points in this scene. */
+  experiences?: ExperienceHotspotConfig[];
 }
 
 export interface FloorConfig {
@@ -110,6 +133,52 @@ export const floors: Record<string, FloorConfig> = {
         hotspots: [
           { target: 'entry', position: { x: 0.82, y: -1.5, z: 4.98 }, label: 'FIRST FLOOR ENTRY' },
           { target: 'last', position: { x: -1.06, y: -1.5, z: -3.03 }, label: 'DIAMOND & GEM EXPERIENCE' },
+        ],
+        experiences: [
+          {
+            id: 'diamond-seeker',
+            name: 'The Diamond Seeker',
+            label: 'DIAMOND SEEKER',
+            category: 'Diamond',
+            description:
+              'Discover diamonds chosen for brilliance, rarity and timeless value — pieces that make every moment feel extraordinary.',
+            position: { x: 2.6, y: -1.5, z: 1.4 },
+            pieces: [
+              { productId: 'qween-solitaire-001', name: 'Solitaire Ring', meta: '0.50 CT · VS · G' },
+              { name: 'Diamond Tennis Bracelet', image: 'placeholder://band', meta: '4.20 CT' },
+              { name: 'Diamond Pendant', image: 'placeholder://necklace', meta: '1.10 CT' },
+            ],
+          },
+          {
+            id: 'gemstone-explorer',
+            name: 'The Gemstone Explorer',
+            label: 'GEMSTONE EXPLORER',
+            category: 'Gemstones',
+            description:
+              'Step into a world of colour and character. Rare stones selected for their natural beauty and individuality.',
+            position: { x: -2.9, y: -1.5, z: 1.1 },
+            color: '#8fd0ff',
+            pieces: [
+              { name: 'Sapphire Ring', image: 'placeholder://ring', meta: 'Ceylon Blue' },
+              { name: 'Emerald Necklace', image: 'placeholder://necklace', meta: 'Colombian' },
+              { name: 'Ruby Earrings', image: 'placeholder://earrings', meta: 'Pigeon Blood' },
+            ],
+          },
+          {
+            id: 'modern-queen',
+            name: 'The Modern Queen',
+            label: 'MODERN QUEEN',
+            category: 'Persona',
+            description:
+              'Statement pieces designed to become part of your signature — bold silhouettes, refined details, effortless luxury.',
+            position: { x: 0.2, y: -1.5, z: -2.4 },
+            color: '#e7c6ff',
+            pieces: [
+              { name: 'Cocktail Ring', image: 'placeholder://ring', meta: 'Statement' },
+              { name: 'Statement Earrings', image: 'placeholder://earrings', meta: 'Chandelier' },
+              { productId: 'qween-eternity-003', name: 'Diamond Bracelet', meta: '1.50 CT · VS' },
+            ],
+          },
         ],
       },
       last: {

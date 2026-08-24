@@ -1,4 +1,4 @@
-import type { NavigationHotspot, VRScene } from '@/types/vr';
+import type { ExperienceHotspot, NavigationHotspot, VRHotspot, VRScene } from '@/types/vr';
 import { floors, floorOrder, sceneIdFor } from './floors';
 
 /**
@@ -31,7 +31,7 @@ function buildScenes(): VRScene[] {
     if (!floor) continue;
     for (const [nodeId, node] of Object.entries(floor.nodes)) {
       const id = sceneIdFor(floorId, nodeId);
-      const hotspots: NavigationHotspot[] = node.hotspots.map((h, i) => ({
+      const navHotspots: NavigationHotspot[] = node.hotspots.map((h, i) => ({
         // Index-suffixed so a node with two pads to the same target still has
         // unique hotspot ids (React keys, raycast lookup, position overrides).
         id: `${id}-to-${h.target}-${i}`,
@@ -47,6 +47,27 @@ function buildScenes(): VRScene[] {
         style: h.style ?? 'floor',
         ...(h.color ? { color: h.color } : {}),
       }));
+
+      // Experience (persona) hotspots — only active ones render; each carries a
+      // full copy of its curated content so the renderer/editor never mutate
+      // the shared config object.
+      const experienceHotspots: ExperienceHotspot[] = (node.experiences ?? [])
+        .filter((e) => e.active !== false)
+        .map((e) => ({
+          id: `${id}-exp-${e.id}`,
+          type: 'experience',
+          name: e.name,
+          label: e.label,
+          category: e.category,
+          description: e.description,
+          pieces: e.pieces.map((p) => ({ ...p })),
+          position: { x: e.position.x, y: e.position.y, z: e.position.z },
+          active: true,
+          ...(e.color ? { color: e.color } : {}),
+          ...(e.view ? { view: { ...e.view } } : {}),
+        }));
+
+      const hotspots: VRHotspot[] = [...navHotspots, ...experienceHotspots];
       scenes.push({
         id,
         name: floor.label,

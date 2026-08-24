@@ -80,7 +80,50 @@ export interface ProductHotspot extends HotspotBase {
   productId: string;
 }
 
-export type VRHotspot = NavigationHotspot | ProductHotspot;
+/**
+ * One featured jewellery piece inside an Experience hotspot's glass card.
+ * `productId` optionally links to the existing product catalogue (data/products.ts)
+ * / a 3D asset; `image` overrides the catalogue image when provided.
+ */
+export interface ExperiencePiece {
+  /** Optional link to an existing catalogue product (reuses its image / PDP / GLB). */
+  productId?: string;
+  name?: string;
+  /** Image URL or "placeholder://<key>". Falls back to the linked product's image. */
+  image?: string;
+  /** Very small supporting line, e.g. "1.50 CT · VS". */
+  meta?: string;
+  /** Optional GLB / 3D asset path for a future product viewer. */
+  glb?: string;
+}
+
+/**
+ * A Persona / Experience discovery point (§Experience Hotspots). Rendered as the
+ * same subtle floor pad as navigation hotspots, but activating it raises a
+ * fluidic light field and floats a glassmorphism experience card curated around
+ * a persona (e.g. "The Diamond Seeker") with 2–4 featured pieces.
+ */
+export interface ExperienceHotspot extends HotspotBase {
+  type: 'experience';
+  /** Full display name, e.g. "The Diamond Seeker". */
+  name: string;
+  /** Short uppercase label shown on the pad / card eyebrow, e.g. "DIAMOND SEEKER". */
+  label: string;
+  /** Persona / experience category, e.g. "Diamond", "Gemstones", "Persona". */
+  category: string;
+  /** 2–3 line elegant description (~180 chars). */
+  description: string;
+  /** 2–4 featured pieces. */
+  pieces: ExperiencePiece[];
+  /** Optional accent colour override (hex). Defaults to ice-cyan. */
+  color?: string;
+  /** Optional camera orientation to ease toward when activated (desktop). */
+  view?: CameraOrientation;
+  /** Inactive hotspots are hidden from the experience (still editable in Tools). */
+  active?: boolean;
+}
+
+export type VRHotspot = NavigationHotspot | ProductHotspot | ExperienceHotspot;
 
 /* ------------------------------------------------------------------ *
  * Scenes
@@ -135,7 +178,10 @@ export type AnalyticsEvent =
   | 'product_panel_closed'
   | 'product_pdp_clicked'
   | 'scene_transition_started'
-  | 'scene_transition_completed';
+  | 'scene_transition_completed'
+  | 'experience_hotspot_opened'
+  | 'experience_hotspot_closed'
+  | 'experience_piece_selected';
 
 export interface AnalyticsPayload {
   [key: string]: string | number | boolean | undefined;
