@@ -178,7 +178,10 @@ export class VRSceneEngine {
   /** Desktop hotspot editor (§?edit=true). While active, dragging a hotspot
    *  repositions it instead of turning the view, and clicks never navigate. */
   private editMode = false;
-  private editorDrag: { marker: THREE.Object3D; hotspot: NavigationHotspot } | null = null;
+  private editorDrag: {
+    marker: THREE.Object3D;
+    hotspot: NavigationHotspot | ExperienceHotspot;
+  } | null = null;
   /** Monotonic counter for generating unique ids for editor-created hotspots. */
   private hotspotSeq = 0;
 
@@ -578,7 +581,9 @@ export class VRSceneEngine {
     const h = drag.hotspot;
     const np = new THREE.Vector3();
 
-    if ((h.style ?? 'floor') === 'floor') {
+    // Experience pads are always floor-anchored; nav pads may be billboards.
+    const style = h.type === 'navigation' ? h.style ?? 'floor' : 'floor';
+    if (style === 'floor') {
       // Slide across the floor plane (keep its current height y).
       const y = h.position.y;
       if (Math.abs(ray.direction.y) < 1e-5) return; // parallel to floor
@@ -593,7 +598,8 @@ export class VRSceneEngine {
     }
 
     this.hotspots.moveHotspotObject(drag.marker, { x: np.x, y: np.y, z: np.z });
-    this.emitEditable();
+    if (h.type === 'experience') this.emitEditableExperiences();
+    else this.emitEditable();
   }
 
   /* ---------------------------- view tuning (debug) ----------------------- */
@@ -935,7 +941,7 @@ export class VRSceneEngine {
     if (this.editMode) {
       this.raycaster.setFromCamera(this.hoverFromPointer, this.camera);
       const hit = this.hotspots.raycast(this.raycaster);
-      if (hit && hit.hotspot.type === 'navigation') {
+      if (hit && (hit.hotspot.type === 'navigation' || hit.hotspot.type === 'experience')) {
         this.editorDrag = { marker: hit.object, hotspot: hit.hotspot };
         this.container.style.cursor = 'grabbing';
         return;
