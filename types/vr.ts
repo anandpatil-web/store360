@@ -117,6 +117,9 @@ export interface ExperienceHotspot extends HotspotBase {
   pieces: ExperiencePiece[];
   /** Optional accent colour override (hex). Defaults to ice-cyan. */
   color?: string;
+  /** Height (m) the fluidic vertical light rays rise on activation. Default
+   *  ~0.75m (~2.5ft); tunable per hotspot from the Tools section. */
+  glowHeight?: number;
   /** Optional camera orientation to ease toward when activated (desktop). */
   view?: CameraOrientation;
   /** Inactive hotspots are hidden from the experience (still editable in Tools). */

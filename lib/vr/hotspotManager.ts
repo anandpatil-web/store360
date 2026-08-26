@@ -163,6 +163,11 @@ export class HotspotManager {
     return this.objects.find((o) => o.hotspot.id === id)?.floor ?? null;
   }
 
+  /** Set the vertical glow (ray) height for a hotspot's floor pad. */
+  setGlowHeightById(id: string, meters: number): void {
+    this.floorFor(id)?.setGlowHeight(meters);
+  }
+
   /** World position of a hotspot's marker (for anchoring the experience card). */
   worldPositionOf(id: string): THREE.Vector3 | null {
     const obj = this.objects.find((o) => o.hotspot.id === id);
@@ -263,7 +268,8 @@ export class HotspotManager {
         (hotspot.type === 'navigation' || hotspot.type === 'experience'
           ? hotspot.color
           : undefined) ?? FLOOR_COLOR;
-      const floor = new FloorHotspot({ position: pos, color });
+      const glowHeight = hotspot.type === 'experience' ? hotspot.glowHeight : undefined;
+      const floor = new FloorHotspot({ position: pos, color, glowHeight });
       // Label floats above the pad so it stays readable off the ground.
       const label = this.createLabel(this.labelFor(hotspot), pos, 1.0);
       return { hotspot, marker: floor.hitMesh, floor, label, baseScale: 1, hover: 0 };

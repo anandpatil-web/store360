@@ -49,6 +49,8 @@ export interface ExperienceHotspotConfig {
   /** Floor-anchored world position (y ≈ −eye height). */
   position: Vec3;
   color?: string;
+  /** Height (m) of the fluidic vertical glow rays. Default ~0.75. */
+  glowHeight?: number;
   view?: CameraOrientation;
   /** Defaults to true; inactive hotspots are hidden but stay editable. */
   active?: boolean;

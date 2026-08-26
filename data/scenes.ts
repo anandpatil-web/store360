@@ -64,6 +64,7 @@ function buildScenes(): VRScene[] {
           position: { x: e.position.x, y: e.position.y, z: e.position.z },
           active: true,
           ...(e.color ? { color: e.color } : {}),
+          ...(e.glowHeight != null ? { glowHeight: e.glowHeight } : {}),
           ...(e.view ? { view: { ...e.view } } : {}),
         }));
 

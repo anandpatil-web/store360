@@ -35,6 +35,7 @@ export interface SavedExperience {
   position: Vec3;
   pieces: ExperiencePiece[];
   color?: string;
+  glowHeight?: number;
   active?: boolean;
 }
 

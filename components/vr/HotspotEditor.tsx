@@ -144,6 +144,7 @@ export function HotspotEditor({
         pieces: e.pieces.map((p) => ({ ...p })),
         active: e.active !== false,
         ...(e.color ? { color: e.color } : {}),
+        ...(e.glowHeight != null ? { glowHeight: e.glowHeight } : {}),
       }));
     }
     saveExperienceOverrides(expMap);
@@ -482,6 +483,15 @@ function ExperienceRow({
           ))}
           {exp.pieces.length < 4 && <MiniBtn label="+ Piece" onClick={addPiece} />}
 
+          <div className="mt-2 mb-1 text-qween-mist">vertical glow (m):</div>
+          <AxisRow
+            axis={'↑' as 'x'}
+            value={exp.glowHeight}
+            onDec={() => onUpdate(exp.id, { glowHeight: Math.max(0.1, r(exp.glowHeight - 0.1)) })}
+            onInc={() => onUpdate(exp.id, { glowHeight: Math.min(3, r(exp.glowHeight + 0.1)) })}
+            onSet={(v) => onUpdate(exp.id, { glowHeight: Math.max(0.1, Math.min(3, v)) })}
+          />
+
           <div className="mt-2 mb-1 text-qween-mist">position:</div>
           {(['x', 'y', 'z'] as const).map((axis) => (
             <AxisRow
@@ -722,6 +732,7 @@ function generateFloorsSnippet(
         })
         .join(',\n');
       const color = e.color ? `\n    color: '${e.color}',` : '';
+      const glow = e.glowHeight != null ? `\n    glowHeight: ${r(e.glowHeight)},` : '';
       const active = e.active ? '' : '\n    active: false,';
       out.push(
         `  {
@@ -731,7 +742,7 @@ function generateFloorsSnippet(
     category: '${esc(e.category)}',
     description:
       '${esc(e.description)}',
-    position: { x: ${r(e.position.x)}, y: ${r(e.position.y)}, z: ${r(e.position.z)} },${color}${active}
+    position: { x: ${r(e.position.x)}, y: ${r(e.position.y)}, z: ${r(e.position.z)} },${color}${glow}${active}
     pieces: [
 ${pieces}
     ],

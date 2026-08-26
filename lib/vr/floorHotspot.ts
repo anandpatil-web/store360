@@ -29,10 +29,14 @@ export interface FloorHotspotOptions {
   color?: string;
   /** Visual footprint of the ring in metres (glow/particles extend past it). */
   size?: number;
+  /** Height (m) the activation rays rise. Default BASE_RAY_H. */
+  glowHeight?: number;
 }
 
 const DEFAULT_COLOR = '#9fe4ff';
 const DEFAULT_SIZE = 0.6;
+/** Base modelled ray height (m); the live glow height scales this. */
+const BASE_RAY_H = 0.75;
 /** Slow, calm breathing period (s). Higher = more languid. */
 const PULSE_PERIOD_S = 6.0;
 
@@ -62,12 +66,15 @@ export class FloorHotspot {
   private rayBaseX: number[] = [];
   private rayBaseZ: number[] = [];
   private volumeMat: THREE.MeshBasicMaterial | null = null;
+  /** Live height multiplier for the rays (1 = BASE_RAY_H). */
+  private glowScale = 1;
 
   constructor(opts: FloorHotspotOptions) {
     const color = opts.color ?? DEFAULT_COLOR;
     const size = opts.size ?? DEFAULT_SIZE;
     this.color = color;
     this.size = size;
+    if (opts.glowHeight != null) this.glowScale = opts.glowHeight / BASE_RAY_H;
 
     this.group.name = 'floor-hotspot';
     this.group.position.copy(opts.position);
@@ -199,6 +206,12 @@ export class FloorHotspot {
     if (this.energyTarget > 0 && !this.raysGroup) this.buildRays();
   }
 
+  /** Set the vertical glow (ray) height in metres. Applies live. */
+  setGlowHeight(meters: number): void {
+    this.glowScale = Math.max(0.05, meters) / BASE_RAY_H;
+    if (this.raysGroup) this.raysGroup.scale.y = this.glowScale;
+  }
+
   dispose(): void {
     for (const m of [
       this.glowMat,
@@ -230,7 +243,7 @@ export class FloorHotspot {
     rayTex.colorSpace = THREE.SRGBColorSpace;
     this.textures.push(rayTex);
 
-    const RAY_H = 0.75; // ~2.5ft
+    const RAY_H = BASE_RAY_H; // modelled height; glowScale scales it live
     const count = 7;
     const radius = this.size * 0.34;
     for (let i = 0; i < count; i++) {
@@ -280,6 +293,7 @@ export class FloorHotspot {
     group.add(vol, vol2);
 
     group.visible = false;
+    group.scale.y = this.glowScale;
     this.raysGroup = group;
     this.group.add(group);
   }

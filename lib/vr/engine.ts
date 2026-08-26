@@ -63,6 +63,7 @@ export interface EditableExperience {
   description: string;
   active: boolean;
   color?: string;
+  glowHeight: number;
   position: { x: number; y: number; z: number };
   pieces: ExperiencePiece[];
 }
@@ -502,6 +503,7 @@ export class VRSceneEngine {
         position: { x: e.position.x, y: e.position.y, z: e.position.z },
         active: e.active !== false,
         ...(e.color ? { color: e.color } : {}),
+        ...(e.glowHeight != null ? { glowHeight: e.glowHeight } : {}),
       }));
       next = [...nonExp, ...exps];
     }
@@ -1361,6 +1363,7 @@ export class VRSceneEngine {
       description: h.description,
       active: h.active !== false,
       color: h.color,
+      glowHeight: h.glowHeight ?? 0.75,
       position: { x: round(h.position.x), y: round(h.position.y), z: round(h.position.z) },
       pieces: h.pieces.map((p) => ({ ...p })),
     }));
@@ -1402,6 +1405,7 @@ export class VRSceneEngine {
     const movedTo = patch.position;
     Object.assign(h, patch);
     if (movedTo) this.hotspots.moveHotspotById(id, movedTo);
+    if (patch.glowHeight !== undefined) this.hotspots.setGlowHeightById(id, patch.glowHeight);
     // Rebuild markers only when a label-affecting field changed (avoid churn on
     // pure position nudges, which moveHotspotById already handled).
     if (patch.label !== undefined || patch.color !== undefined || patch.active !== undefined) {
