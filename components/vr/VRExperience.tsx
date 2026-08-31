@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useVRStore } from '@/lib/vrStore';
-import { VRSceneEngine, type EditableHotspot } from '@/lib/vr/engine';
+import { VRSceneEngine, type EditableHotspot, type EditableExperience } from '@/lib/vr/engine';
 import { detectXRSupport } from '@/lib/vr/webxr';
 import { trackEvent, flushSession } from '@/lib/vr/analytics';
 import { AmbientAudio } from '@/lib/vr/ambientAudio';
@@ -48,6 +48,7 @@ export function VRExperience() {
   const [testMode, setTestMode] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editableHotspots, setEditableHotspots] = useState<EditableHotspot[]>([]);
+  const [editableExperiences, setEditableExperiences] = useState<EditableExperience[]>([]);
 
   const {
     isReady,
@@ -100,6 +101,7 @@ export function VRExperience() {
       onVRSessionChange: (active) => store.setVRMode(active),
       onDebugUpdate: (info) => store.setDebugInfo(info),
       onEditableHotspots: (list) => setEditableHotspots(list),
+      onEditableExperiences: (list) => setEditableExperiences(list),
       onEvent: (event, payload) => trackEvent(event as never, payload as never),
     });
     engineRef.current = engine;
@@ -240,6 +242,13 @@ export function VRExperience() {
           onRemoveHotspot={(id) => engineRef.current?.removeHotspot(id)}
           onSetTarget={(id, targetSceneId) => engineRef.current?.setHotspotTarget(id, targetSceneId)}
           onSetLabel={(id, label) => engineRef.current?.setHotspotLabel(id, label)}
+          experiences={editableExperiences}
+          onAddExperience={() => engineRef.current?.addExperience()}
+          onUpdateExperience={(id, patch) => engineRef.current?.updateExperience(id, patch)}
+          onRemoveExperience={(id) => engineRef.current?.removeExperience(id)}
+          onDuplicateExperience={(id) => engineRef.current?.duplicateExperience(id)}
+          onToggleExperienceActive={(id, active) => engineRef.current?.setExperienceActive(id, active)}
+          onPreviewExperience={(id) => engineRef.current?.previewExperience(id)}
         />
       )}
 

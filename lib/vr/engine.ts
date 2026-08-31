@@ -1,14 +1,22 @@
 import * as THREE from 'three';
-import type { CameraOrientation, NavigationHotspot, VRHotspot, VRScene } from '@/types/vr';
+import type {
+  CameraOrientation,
+  ExperienceHotspot,
+  ExperiencePiece,
+  NavigationHotspot,
+  VRHotspot,
+  VRScene,
+} from '@/types/vr';
 import { getProductById } from '@/data/products';
 import { DEFAULT_SCENE_ID, getSceneById } from '@/data/scenes';
 import { TextureManager } from './textureManager';
 import { HotspotManager } from './hotspotManager';
 import { SceneManager } from './sceneManager';
 import { ProductPanel3D, type PanelAction } from './productPanel';
+import { ExperienceCard3D, type CardAction } from './experienceCard3D';
 import { ViewControlsPanel3D, type ViewControlAction } from './viewControlsPanel3D';
 import { NadirBlur } from './nadirBlur';
-import { loadHotspotOverrides } from './hotspotOverrides';
+import { loadHotspotOverrides, loadExperienceOverrides } from './hotspotOverrides';
 import {
   VR_CONFIG,
   DEG2RAD,
@@ -45,6 +53,21 @@ export interface EditableHotspot {
   position: { x: number; y: number; z: number };
 }
 
+/** One experience (persona) hotspot's editable state, for the Tools section. */
+export interface EditableExperience {
+  id: string;
+  sceneId: string;
+  name: string;
+  label: string;
+  category: string;
+  description: string;
+  active: boolean;
+  color?: string;
+  glowHeight: number;
+  position: { x: number; y: number; z: number };
+  pieces: ExperiencePiece[];
+}
+
 /** Current values of the live-tunable "View Controls" debug panel (§ViewControlsPanel). */
 export interface ViewTuning {
   eyeHeight: number;
@@ -67,6 +90,8 @@ export interface EngineCallbacks {
   /** Desktop hotspot editor (§?edit=true): current scene's hotspots + live
    *  positions, emitted on scene load and while dragging. */
   onEditableHotspots?: (hotspots: EditableHotspot[]) => void;
+  /** Experience (persona) hotspots in the current scene, for the Tools section. */
+  onEditableExperiences?: (experiences: EditableExperience[]) => void;
   /** High-level analytics passthrough — engine reports what happened. */
   onEvent?: (event: string, payload?: Record<string, unknown>) => void;
 }
@@ -99,6 +124,10 @@ export class VRSceneEngine {
   private hotspots: HotspotManager;
   private sceneManager: SceneManager;
   private panel: ProductPanel3D;
+  /** Floating glass persona card (§Experience hotspots). */
+  private experienceCard: ExperienceCard3D;
+  /** Id of the currently-raised experience hotspot, or null. */
+  private activeExperienceId: string | null = null;
   /** In-scene (real 3D geometry) counterpart of the 2D debug ViewControlsPanel
    *  — a DOM overlay is never composited into an immersive session, so this
    *  is the only way to see/use it while actually wearing the headset. */
@@ -150,7 +179,10 @@ export class VRSceneEngine {
   /** Desktop hotspot editor (§?edit=true). While active, dragging a hotspot
    *  repositions it instead of turning the view, and clicks never navigate. */
   private editMode = false;
-  private editorDrag: { marker: THREE.Object3D; hotspot: NavigationHotspot } | null = null;
+  private editorDrag: {
+    marker: THREE.Object3D;
+    hotspot: NavigationHotspot | ExperienceHotspot;
+  } | null = null;
   /** Monotonic counter for generating unique ids for editor-created hotspots. */
   private hotspotSeq = 0;
 
@@ -222,6 +254,12 @@ export class VRSceneEngine {
     this.panel = new ProductPanel3D(this.textures);
     this.scene.add(this.panel.group);
 
+    this.experienceCard = new ExperienceCard3D(this.textures);
+    this.experienceCard.onClosed = () => {
+      this.setCursor(false);
+    };
+    this.world.add(this.experienceCard.group);
+
     this.scene.add(this.viewControlsPanel3D.group);
 
     this.debugGizmos.visible = false;
@@ -237,6 +275,10 @@ export class VRSceneEngine {
       this.hotspots,
       {
         onSceneViewed: (s) => {
+          // The experience card is anchored to a hotspot in the old scene —
+          // instantly clear it (its marker is gone after the rebuild).
+          this.experienceCard.forceHide();
+          this.activeExperienceId = null;
           // Saved editor overrides are a local scratchpad — apply them ONLY
           // while editing, never to the live/normal experience (which must
           // always reflect data/floors.ts). Otherwise a stale localStorage
@@ -246,7 +288,10 @@ export class VRSceneEngine {
           this.cb.onEvent?.('scene_viewed', { sceneId: s.id });
           this.nadirBlur.setTexture(this.sceneManager.currentTexture);
           if (this.debug) this.rebuildDebugGizmos(s);
-          if (this.editMode) this.emitEditable();
+          if (this.editMode) {
+            this.emitEditable();
+            this.emitEditableExperiences();
+          }
         },
         onTransitionStart: (from, to) => {
           this.cb.onTransitionStart?.(from, to);
@@ -283,6 +328,7 @@ export class VRSceneEngine {
     this.resizeObserver?.disconnect();
     this.sceneManager.dispose();
     this.hotspots.dispose();
+    this.experienceCard.dispose();
     this.panel.dispose();
     this.viewControlsPanel3D.dispose();
     this.nadirBlur.dispose();
@@ -387,7 +433,10 @@ export class VRSceneEngine {
     if (this.sceneManager.currentScene) {
       this.hotspots.setScene(this.sceneManager.currentScene);
     }
-    if (on) this.emitEditable();
+    if (on) {
+      this.emitEditable();
+      this.emitEditableExperiences();
+    }
   }
 
   /** Current scene's navigation hotspots with their live (possibly edited)
@@ -420,18 +469,46 @@ export class VRSceneEngine {
    *  into data/floors.ts. A saved scene fully replaces its config-defined
    *  navigation pads; product hotspots are left untouched. */
   private applyHotspotOverrides(scene: VRScene): void {
-    const saved = loadHotspotOverrides()[scene.id];
-    if (!saved || saved.length === 0) return;
-    const nonNav = scene.hotspots.filter((h) => h.type !== 'navigation');
-    const navs: NavigationHotspot[] = saved.map((s) => ({
-      id: `${scene.id}-nav-${this.hotspotSeq++}`,
-      type: 'navigation',
-      label: s.label ?? 'Explore',
-      targetSceneId: s.targetSceneId,
-      position: { x: s.position.x, y: s.position.y, z: s.position.z },
-      style: s.style,
-    }));
-    scene.hotspots = [...navs, ...nonNav];
+    const savedNav = loadHotspotOverrides()[scene.id];
+    const savedExp = loadExperienceOverrides()[scene.id];
+    if ((!savedNav || savedNav.length === 0) && !savedExp) return;
+
+    let next = scene.hotspots;
+
+    if (savedNav && savedNav.length > 0) {
+      const nonNav = next.filter((h) => h.type !== 'navigation');
+      const navs: NavigationHotspot[] = savedNav.map((s) => ({
+        id: `${scene.id}-nav-${this.hotspotSeq++}`,
+        type: 'navigation',
+        label: s.label ?? 'Explore',
+        targetSceneId: s.targetSceneId,
+        position: { x: s.position.x, y: s.position.y, z: s.position.z },
+        style: s.style,
+      }));
+      next = [...navs, ...nonNav];
+    }
+
+    if (savedExp) {
+      const nonExp = next.filter((h) => h.type !== 'experience');
+      // In edit mode we keep inactive experiences too (so they stay editable);
+      // the live build filters them.
+      const exps: ExperienceHotspot[] = savedExp.map((e) => ({
+        id: e.id,
+        type: 'experience',
+        name: e.name,
+        label: e.label,
+        category: e.category,
+        description: e.description,
+        pieces: e.pieces.map((p) => ({ ...p })),
+        position: { x: e.position.x, y: e.position.y, z: e.position.z },
+        active: e.active !== false,
+        ...(e.color ? { color: e.color } : {}),
+        ...(e.glowHeight != null ? { glowHeight: e.glowHeight } : {}),
+      }));
+      next = [...nonExp, ...exps];
+    }
+
+    scene.hotspots = next;
     this.hotspots.setScene(scene);
   }
 
@@ -506,7 +583,9 @@ export class VRSceneEngine {
     const h = drag.hotspot;
     const np = new THREE.Vector3();
 
-    if ((h.style ?? 'floor') === 'floor') {
+    // Experience pads are always floor-anchored; nav pads may be billboards.
+    const style = h.type === 'navigation' ? h.style ?? 'floor' : 'floor';
+    if (style === 'floor') {
       // Slide across the floor plane (keep its current height y).
       const y = h.position.y;
       if (Math.abs(ray.direction.y) < 1e-5) return; // parallel to floor
@@ -521,7 +600,8 @@ export class VRSceneEngine {
     }
 
     this.hotspots.moveHotspotObject(drag.marker, { x: np.x, y: np.y, z: np.z });
-    this.emitEditable();
+    if (h.type === 'experience') this.emitEditableExperiences();
+    else this.emitEditable();
   }
 
   /* ---------------------------- view tuning (debug) ----------------------- */
@@ -745,6 +825,7 @@ export class VRSceneEngine {
 
     this.sceneManager.update(dt);
     this.hotspots.update(this.elapsed);
+    this.experienceCard.update(dt);
 
     if (this.renderer.xr.isPresenting) {
       // Clamp head pitch by counter-rotating the world — after this frame's
@@ -862,7 +943,7 @@ export class VRSceneEngine {
     if (this.editMode) {
       this.raycaster.setFromCamera(this.hoverFromPointer, this.camera);
       const hit = this.hotspots.raycast(this.raycaster);
-      if (hit && hit.hotspot.type === 'navigation') {
+      if (hit && (hit.hotspot.type === 'navigation' || hit.hotspot.type === 'experience')) {
         this.editorDrag = { marker: hit.object, hotspot: hit.hotspot };
         this.container.style.cursor = 'grabbing';
         return;
@@ -929,8 +1010,10 @@ export class VRSceneEngine {
       this.pitch = this.clampPitch(this.pitch + VR_CONFIG.keyboardYawStep);
     else if (e.key === 'ArrowDown')
       this.pitch = this.clampPitch(this.pitch - VR_CONFIG.keyboardYawStep);
-    else if (e.key === 'Escape') this.closeProductPanel();
-    else if (e.key === 'h' || e.key === 'H') this.goHome();
+    else if (e.key === 'Escape') {
+      if (this.experienceCard.isOpen()) this.closeExperience();
+      else this.closeProductPanel();
+    } else if (e.key === 'h' || e.key === 'H') this.goHome();
   };
 
   /* ----------------------------- controllers ---------------------------- */
@@ -1064,6 +1147,19 @@ export class VRSceneEngine {
       }
     }
 
+    // Experience card — while open, its close / explore / piece targets win.
+    if (this.experienceCard.isOpen()) {
+      const action = this.experienceCard.raycast(this.raycaster);
+      this.experienceCard.setHovered(action);
+      if (action) {
+        this.panel.setHoveredAction(null);
+        this.hotspots.setHovered(null);
+        this.setCursor(true);
+        return this.experienceCard.group.getWorldPosition(new THREE.Vector3()).length() || 1.4;
+      }
+      // Still allow hotspot hover around the card.
+    }
+
     // Panel buttons first.
     if (this.panel.isOpen()) {
       const action = this.panel.raycast(this.raycaster);
@@ -1100,7 +1196,16 @@ export class VRSceneEngine {
       }
     }
 
-    // 2) Product panel buttons.
+    // 2) Experience card (close / explore / piece).
+    if (this.experienceCard.isOpen()) {
+      const action = this.experienceCard.raycast(this.raycaster);
+      if (action) {
+        this.handleCardAction(action);
+        return;
+      }
+    }
+
+    // 3) Product panel buttons.
     if (this.panel.isOpen()) {
       const action = this.panel.raycast(this.raycaster);
       if (action) {
@@ -1109,7 +1214,7 @@ export class VRSceneEngine {
       }
     }
 
-    // 3) Hotspots. Prefer whatever the ray is pointing at; otherwise fall back
+    // 4) Hotspots. Prefer whatever the ray is pointing at; otherwise fall back
     //    to the B-button-focused hotspot (no-aim selection, see cycleHotspotFocus).
     const hit = this.hotspots.raycast(this.raycaster);
     const h = hit?.hotspot ?? this.hotspots.focusedHotspot();
@@ -1117,15 +1222,53 @@ export class VRSceneEngine {
     this.activateHotspot(h);
   }
 
-  /** Travel to a navigation hotspot's target, or open a product hotspot. */
+  /** Handle a click inside the experience card. */
+  private handleCardAction(action: CardAction): void {
+    if (action.kind === 'close') {
+      this.closeExperience();
+      return;
+    }
+    const scene = this.sceneManager.currentScene;
+    const exp = scene?.hotspots.find(
+      (x): x is Extract<VRHotspot, { type: 'experience' }> =>
+        x.type === 'experience' && x.id === this.activeExperienceId,
+    );
+    if (!exp) return;
+
+    if (action.kind === 'piece') {
+      const piece = exp.pieces[action.index];
+      if (!piece) return;
+      this.cb.onEvent?.('experience_piece_selected', {
+        hotspotId: exp.id,
+        productId: piece.productId,
+        name: piece.name,
+      });
+      // If the piece links a catalogue product with a PDP, open it.
+      const product = piece.productId ? getProductById(piece.productId) : undefined;
+      if (product?.pdpUrl && typeof window !== 'undefined') {
+        window.open(product.pdpUrl, '_blank', 'noopener,noreferrer');
+      }
+    } else {
+      // Explore experience — open the PDP of the first linked product if any.
+      const linked = exp.pieces.find((p) => p.productId);
+      const product = linked?.productId ? getProductById(linked.productId) : undefined;
+      if (product?.pdpUrl && typeof window !== 'undefined') {
+        window.open(product.pdpUrl, '_blank', 'noopener,noreferrer');
+      }
+    }
+  }
+
+  /** Travel to a navigation hotspot, open a product panel, or raise an
+   *  experience (persona) card. */
   private activateHotspot(h: VRHotspot): void {
     if (h.type === 'navigation') {
       this.cb.onEvent?.('navigation_hotspot_clicked', {
         hotspotId: h.id,
         targetSceneId: h.targetSceneId,
       });
-      // Close any open panel before travelling.
+      // Close any open panel/card before travelling.
       if (this.panel.isOpen()) this.closeProductPanel();
+      if (this.experienceCard.isOpen()) this.closeExperience();
       // Gently orient toward the destination (§3) — plays out while the
       // scene fades to black, so it's felt but never blocks the transition.
       // A floor pad sits on the ground, so orient by heading only (level
@@ -1133,9 +1276,186 @@ export class VRSceneEngine {
       const { yaw, pitch } = directionToYawPitch(h.position);
       this.animateLookTo(yaw, h.style === 'floor' ? 0 : pitch, 300);
       this.sceneManager.goTo(h.targetSceneId);
+    } else if (h.type === 'experience') {
+      this.openExperience(h);
     } else {
       this.openProduct(h);
     }
+  }
+
+  /**
+   * Raise an experience (persona) hotspot: ignite the floor's fluidic rays,
+   * float the glass card anchored above the hotspot (oriented to the user
+   * once), and gently orient the desktop look toward it. Activating a second
+   * hotspot dismisses the first.
+   */
+  private openExperience(h: Extract<VRHotspot, { type: 'experience' }>): void {
+    if (this.experienceCard.currentHotspotId() === h.id && this.experienceCard.isOpen()) return;
+
+    // Dismiss any other open experience (and its energy) first.
+    if (this.activeExperienceId && this.activeExperienceId !== h.id) {
+      this.hotspots.floorFor(this.activeExperienceId)?.setEnergy(0);
+    }
+    if (this.panel.isOpen()) this.closeProductPanel();
+
+    this.activeExperienceId = h.id;
+    this.hotspots.floorFor(h.id)?.setEnergy(1);
+
+    // Anchor above + slightly toward the user from the hotspot's world position.
+    const head = this.renderer.xr.isPresenting ? this.renderer.xr.getCamera() : this.camera;
+    const headPos = head.getWorldPosition(new THREE.Vector3());
+    const hotPos = this.hotspots.worldPositionOf(h.id) ??
+      new THREE.Vector3(h.position.x, h.position.y, h.position.z);
+    const toUser = headPos.clone().sub(hotPos);
+    toUser.y = 0;
+    if (toUser.lengthSq() < 1e-4) toUser.set(0, 0, 1);
+    toUser.normalize();
+    const cardPos = hotPos.clone().addScaledVector(toUser, 0.6);
+    cardPos.y = headPos.y - 0.15; // just below eye level, floating above the pad
+    const lookAt = new THREE.Vector3(headPos.x, cardPos.y, headPos.z);
+
+    // Rays rise first; the card forms a beat later out of the light field.
+    window.setTimeout(() => {
+      if (this.activeExperienceId === h.id) this.experienceCard.show(h, cardPos, lookAt);
+    }, 160);
+
+    // Gently face the hotspot on desktop (VR keeps head control).
+    if (h.view) this.animateLookTo(h.view.yaw, h.view.pitch, 450);
+    else {
+      const { yaw } = directionToYawPitch(h.position);
+      this.animateLookTo(yaw, 0, 450);
+    }
+
+    this.cb.onEvent?.('experience_hotspot_opened', { hotspotId: h.id });
+  }
+
+  /** Dismiss the active experience card (reverse fluidic animation). */
+  closeExperience(): void {
+    if (!this.activeExperienceId) return;
+    const id = this.activeExperienceId;
+    this.experienceCard.startDismiss();
+    // Retract the rays a touch after the card starts collapsing.
+    window.setTimeout(() => {
+      if (this.activeExperienceId === id) this.hotspots.floorFor(id)?.setEnergy(0);
+    }, 220);
+    this.cb.onEvent?.('experience_hotspot_closed', { hotspotId: id });
+    this.activeExperienceId = null;
+  }
+
+  /* --------------------- experience editing (Tools) --------------------- */
+
+  private get sceneExperiences(): ExperienceHotspot[] {
+    const scene = this.sceneManager.currentScene;
+    if (!scene) return [];
+    return scene.hotspots.filter((h): h is ExperienceHotspot => h.type === 'experience');
+  }
+
+  /** Current scene's experience hotspots for the Tools list/editor. */
+  getEditableExperiences(): EditableExperience[] {
+    const scene = this.sceneManager.currentScene;
+    if (!scene) return [];
+    return this.sceneExperiences.map((h) => ({
+      id: h.id,
+      sceneId: scene.id,
+      name: h.name,
+      label: h.label,
+      category: h.category,
+      description: h.description,
+      active: h.active !== false,
+      color: h.color,
+      glowHeight: h.glowHeight ?? 0.75,
+      position: { x: round(h.position.x), y: round(h.position.y), z: round(h.position.z) },
+      pieces: h.pieces.map((p) => ({ ...p })),
+    }));
+  }
+
+  private emitEditableExperiences(): void {
+    this.cb.onEditableExperiences?.(this.getEditableExperiences());
+  }
+
+  /** Tools: add a new experience hotspot to the current scene. */
+  addExperience(): string | null {
+    const scene = this.sceneManager.currentScene;
+    if (!scene) return null;
+    const id = `${scene.id}-exp-${Date.now().toString(36)}`;
+    const h: ExperienceHotspot = {
+      id,
+      type: 'experience',
+      name: 'New Experience',
+      label: 'EXPERIENCE',
+      category: 'Persona',
+      description: 'A curated selection — describe this persona in two elegant lines.',
+      pieces: [
+        { name: 'Piece One', image: 'placeholder://ring' },
+        { name: 'Piece Two', image: 'placeholder://necklace' },
+      ],
+      position: { x: 0, y: -1.5, z: -3 },
+      active: true,
+    };
+    scene.hotspots = [...scene.hotspots, h];
+    this.hotspots.setScene(scene);
+    this.emitEditableExperiences();
+    return id;
+  }
+
+  /** Tools: update fields of an experience hotspot. */
+  updateExperience(id: string, patch: Partial<Omit<ExperienceHotspot, 'id' | 'type'>>): void {
+    const h = this.sceneExperiences.find((x) => x.id === id);
+    if (!h) return;
+    const movedTo = patch.position;
+    Object.assign(h, patch);
+    if (movedTo) this.hotspots.moveHotspotById(id, movedTo);
+    if (patch.glowHeight !== undefined) this.hotspots.setGlowHeightById(id, patch.glowHeight);
+    // Rebuild markers only when a label-affecting field changed (avoid churn on
+    // pure position nudges, which moveHotspotById already handled).
+    if (patch.label !== undefined || patch.color !== undefined || patch.active !== undefined) {
+      const scene = this.sceneManager.currentScene;
+      if (scene) this.hotspots.setScene(scene);
+    }
+    // If its card is open, refresh the content live.
+    if (this.activeExperienceId === id && this.experienceCard.isOpen()) {
+      this.previewExperience(id);
+    }
+    this.emitEditableExperiences();
+  }
+
+  /** Tools: remove an experience hotspot. */
+  removeExperience(id: string): void {
+    const scene = this.sceneManager.currentScene;
+    if (!scene) return;
+    if (this.activeExperienceId === id) this.experienceCard.forceHide();
+    scene.hotspots = scene.hotspots.filter((h) => h.id !== id);
+    this.hotspots.setScene(scene);
+    this.emitEditableExperiences();
+  }
+
+  /** Tools: duplicate an experience hotspot (offset slightly). */
+  duplicateExperience(id: string): string | null {
+    const scene = this.sceneManager.currentScene;
+    const src = this.sceneExperiences.find((x) => x.id === id);
+    if (!scene || !src) return null;
+    const copy: ExperienceHotspot = {
+      ...src,
+      id: `${scene.id}-exp-${Date.now().toString(36)}`,
+      name: `${src.name} Copy`,
+      pieces: src.pieces.map((p) => ({ ...p })),
+      position: { x: src.position.x + 0.6, y: src.position.y, z: src.position.z + 0.6 },
+    };
+    scene.hotspots = [...scene.hotspots, copy];
+    this.hotspots.setScene(scene);
+    this.emitEditableExperiences();
+    return copy.id;
+  }
+
+  /** Tools: toggle active/inactive. */
+  setExperienceActive(id: string, active: boolean): void {
+    this.updateExperience(id, { active });
+  }
+
+  /** Tools: preview — raise the card for this experience. */
+  previewExperience(id: string): void {
+    const h = this.sceneExperiences.find((x) => x.id === id);
+    if (h) this.openExperience(h);
   }
 
   private handlePanelAction(action: PanelAction): void {
@@ -1173,6 +1493,7 @@ export class VRSceneEngine {
    * (grip / "pinch") gesture in VR, or the `H` key on desktop.
    */
   private goHome(): void {
+    if (this.experienceCard.isOpen()) this.closeExperience();
     if (this.sceneManager.currentScene?.id === DEFAULT_SCENE_ID) return;
     if (this.panel.isOpen()) this.closeProductPanel();
     this.cb.onEvent?.('navigation_hotspot_clicked', {
@@ -1202,6 +1523,7 @@ export class VRSceneEngine {
 
   private resolveHotspotLabel(h: VRHotspot): string {
     if (h.type === 'navigation') return h.label;
+    if (h.type === 'experience') return h.label;
     return getProductById(h.productId)?.name ?? 'Product';
   }
 

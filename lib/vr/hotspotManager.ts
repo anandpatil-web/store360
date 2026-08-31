@@ -65,6 +65,7 @@ export class HotspotManager {
       if (this.editMode) return `→ ${hotspot.targetSceneId}`;
       return name || 'Explore';
     }
+    if (hotspot.type === 'experience') return hotspot.label;
     return this.resolveLabel(hotspot);
   }
 
@@ -157,6 +158,24 @@ export class HotspotManager {
     return this.focused?.hotspot ?? null;
   }
 
+  /** The FloorHotspot backing a hotspot id (for driving activation energy). */
+  floorFor(id: string): FloorHotspot | null {
+    return this.objects.find((o) => o.hotspot.id === id)?.floor ?? null;
+  }
+
+  /** Set the vertical glow (ray) height for a hotspot's floor pad. */
+  setGlowHeightById(id: string, meters: number): void {
+    this.floorFor(id)?.setGlowHeight(meters);
+  }
+
+  /** World position of a hotspot's marker (for anchoring the experience card). */
+  worldPositionOf(id: string): THREE.Vector3 | null {
+    const obj = this.objects.find((o) => o.hotspot.id === id);
+    if (!obj) return null;
+    const src = obj.floor ? obj.floor.group : obj.sprite!;
+    return src.getWorldPosition(new THREE.Vector3());
+  }
+
   /**
    * Editor (§?edit=true): move the hotspot backing `marker` to a new world
    * position — updates the visual (floor pad or sprite) + its label and mutates
@@ -241,17 +260,27 @@ export class HotspotManager {
     const pos = new THREE.Vector3(hotspot.position.x, hotspot.position.y, hotspot.position.z);
 
     // Floor-projection ("floor pad") variant — a flat, floor-anchored marker.
-    if (hotspot.type === 'navigation' && hotspot.style === 'floor') {
-      const floor = new FloorHotspot({ position: pos, color: hotspot.color ?? FLOOR_COLOR });
+    // Used by navigation floor pads and every Experience (persona) hotspot.
+    const asFloorPad =
+      (hotspot.type === 'navigation' && hotspot.style === 'floor') || hotspot.type === 'experience';
+    if (asFloorPad) {
+      const color =
+        (hotspot.type === 'navigation' || hotspot.type === 'experience'
+          ? hotspot.color
+          : undefined) ?? FLOOR_COLOR;
+      const glowHeight = hotspot.type === 'experience' ? hotspot.glowHeight : undefined;
+      const floor = new FloorHotspot({ position: pos, color, glowHeight });
       // Label floats above the pad so it stays readable off the ground.
       const label = this.createLabel(this.labelFor(hotspot), pos, 1.0);
       return { hotspot, marker: floor.hitMesh, floor, label, baseScale: 1, hover: 0 };
     }
 
     // Billboard variant — the camera-facing diamond / sparkle sprite.
-    const accent = hotspot.type === 'navigation' ? '#c9a15a' : '#d8e6ef';
+    // (Experience hotspots always take the floor-pad path above.)
+    const kind: 'navigation' | 'product' = hotspot.type === 'product' ? 'product' : 'navigation';
+    const accent = kind === 'navigation' ? '#c9a15a' : '#d8e6ef';
     const markerMat = new THREE.SpriteMaterial({
-      map: this.textures.getHotspotTexture(hotspot.type, accent),
+      map: this.textures.getHotspotTexture(kind, accent),
       transparent: true,
       depthTest: false,
       depthWrite: false,

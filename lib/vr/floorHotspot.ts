@@ -29,10 +29,14 @@ export interface FloorHotspotOptions {
   color?: string;
   /** Visual footprint of the ring in metres (glow/particles extend past it). */
   size?: number;
+  /** Height (m) the activation rays rise. Default BASE_RAY_H. */
+  glowHeight?: number;
 }
 
 const DEFAULT_COLOR = '#9fe4ff';
 const DEFAULT_SIZE = 0.6;
+/** Base modelled ray height (m); the live glow height scales this. */
+const BASE_RAY_H = 0.75;
 /** Slow, calm breathing period (s). Higher = more languid. */
 const PULSE_PERIOD_S = 6.0;
 
@@ -50,9 +54,27 @@ export class FloorHotspot {
   private particlesMat: THREE.MeshBasicMaterial;
   private textures: THREE.Texture[] = [];
 
+  private readonly color: string;
+  private readonly size: number;
+
+  /** Fluidic activation energy (0 inactive → 1 fully raised). Only when > 0
+   *  are the vertical light rays built/animated — inactive pads stay cheap. */
+  private energy = 0;
+  private energyTarget = 0;
+  private raysGroup: THREE.Group | null = null;
+  private rayMats: THREE.MeshBasicMaterial[] = [];
+  private rayBaseX: number[] = [];
+  private rayBaseZ: number[] = [];
+  private volumeMat: THREE.MeshBasicMaterial | null = null;
+  /** Live height multiplier for the rays (1 = BASE_RAY_H). */
+  private glowScale = 1;
+
   constructor(opts: FloorHotspotOptions) {
     const color = opts.color ?? DEFAULT_COLOR;
     const size = opts.size ?? DEFAULT_SIZE;
+    this.color = color;
+    this.size = size;
+    if (opts.glowHeight != null) this.glowScale = opts.glowHeight / BASE_RAY_H;
 
     this.group.name = 'floor-hotspot';
     this.group.position.copy(opts.position);
@@ -144,6 +166,50 @@ export class FloorHotspot {
     this.particlesMat.opacity = 0.7 + 0.25 * partWave + 0.15 * h;
     // Whole pad scales ~1.05 on hover.
     this.group.scale.setScalar(1 + 0.05 * h);
+
+    // Fluidic activation energy — ease toward target, drive the rays.
+    if (this.energy !== this.energyTarget) {
+      // Rays rise a touch faster than they retract (organic, never snappy).
+      const rate = this.energyTarget > this.energy ? 3.2 : 2.4;
+      const step = Math.min(1, rate * (1 / 60));
+      this.energy += (this.energyTarget - this.energy) * step * 3;
+      if (Math.abs(this.energy - this.energyTarget) < 0.002) this.energy = this.energyTarget;
+    }
+    if (this.raysGroup) {
+      const e = this.energy;
+      this.raysGroup.visible = e > 0.002;
+      if (this.raysGroup.visible) {
+        const eased = e * e * (3 - 2 * e); // smoothstep
+        // Ring energises further as the rays rise.
+        this.ringMat.opacity = Math.min(1, this.ringMat.opacity + 0.3 * eased);
+        for (let i = 0; i < this.rayMats.length; i++) {
+          // Organic sway — each ray drifts on its own slow phase.
+          const sway = Math.sin(elapsed * 1.6 + i * 1.7) * 0.02 * eased;
+          const child = this.raysGroup.children[i] as THREE.Mesh;
+          child.scale.y = eased;
+          child.position.x = this.rayBaseX[i]! + sway;
+          child.position.z = this.rayBaseZ[i]! + Math.cos(elapsed * 1.3 + i) * 0.02 * eased;
+          this.rayMats[i]!.opacity = (0.28 + 0.12 * Math.sin(elapsed * 2 + i)) * eased;
+        }
+        if (this.volumeMat) this.volumeMat.opacity = 0.14 * eased;
+      }
+    }
+  }
+
+  /**
+   * Set the fluidic activation level (0 = calm inactive marker, 1 = rays fully
+   * raised). Lazily builds the ray geometry the first time it's raised, so
+   * inactive pads never pay for it (§VR performance).
+   */
+  setEnergy(target: number): void {
+    this.energyTarget = THREE.MathUtils.clamp(target, 0, 1);
+    if (this.energyTarget > 0 && !this.raysGroup) this.buildRays();
+  }
+
+  /** Set the vertical glow (ray) height in metres. Applies live. */
+  setGlowHeight(meters: number): void {
+    this.glowScale = Math.max(0.05, meters) / BASE_RAY_H;
+    if (this.raysGroup) this.raysGroup.scale.y = this.glowScale;
   }
 
   dispose(): void {
@@ -160,6 +226,89 @@ export class FloorHotspot {
     this.particles.geometry.dispose();
     this.hitMesh.geometry.dispose();
     for (const t of this.textures) t.dispose();
+    this.disposeRays();
+  }
+
+  /* ------------------------------ fluidic rays --------------------------- */
+
+  /**
+   * Thin vertical light rays (~0.75m / 2.5ft) rising from the ring, plus a soft
+   * translucent volumetric column between them. Additive, camera-billboarded in
+   * yaw so they always read edge-on. Built once, on first activation.
+   */
+  private buildRays(): void {
+    const group = new THREE.Group();
+    group.name = 'floor-hotspot-rays';
+    const rayTex = new THREE.CanvasTexture(createRayCanvas(this.color));
+    rayTex.colorSpace = THREE.SRGBColorSpace;
+    this.textures.push(rayTex);
+
+    const RAY_H = BASE_RAY_H; // modelled height; glowScale scales it live
+    const count = 7;
+    const radius = this.size * 0.34;
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2;
+      const mat = new THREE.MeshBasicMaterial({
+        map: rayTex,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        blending: THREE.AdditiveBlending,
+        opacity: 0,
+        side: THREE.DoubleSide,
+      });
+      const w = this.size * (0.05 + (i % 2) * 0.015);
+      const ray = new THREE.Mesh(new THREE.PlaneGeometry(w, RAY_H), mat);
+      const x = Math.cos(a) * radius;
+      const z = Math.sin(a) * radius;
+      ray.position.set(x, RAY_H / 2, z);
+      ray.rotation.y = -a; // face roughly outward; sway handles life
+      ray.scale.y = 0; // rise from the floor
+      ray.renderOrder = 11;
+      this.rayMats.push(mat);
+      this.rayBaseX.push(x);
+      this.rayBaseZ.push(z);
+      group.add(ray);
+    }
+
+    // Soft translucent volumetric column between the rays.
+    this.volumeMat = new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(createColumnCanvas(this.color)),
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+      opacity: 0,
+      side: THREE.DoubleSide,
+    });
+    this.volumeMat.map!.colorSpace = THREE.SRGBColorSpace;
+    this.textures.push(this.volumeMat.map!);
+    const vol = new THREE.Mesh(new THREE.PlaneGeometry(this.size * 0.9, RAY_H), this.volumeMat);
+    vol.position.y = RAY_H / 2;
+    vol.renderOrder = 10;
+    // Keep the volume plane roughly facing the origin/user via yaw billboard in
+    // update? A fixed cross of two planes reads well from any angle and is cheap.
+    const vol2 = vol.clone();
+    vol2.rotation.y = Math.PI / 2;
+    group.add(vol, vol2);
+
+    group.visible = false;
+    group.scale.y = this.glowScale;
+    this.raysGroup = group;
+    this.group.add(group);
+  }
+
+  private disposeRays(): void {
+    if (!this.raysGroup) return;
+    for (const m of this.rayMats) m.dispose();
+    this.volumeMat?.dispose();
+    this.raysGroup.traverse((o) => {
+      if (o instanceof THREE.Mesh) o.geometry.dispose();
+    });
+    this.raysGroup.removeFromParent();
+    this.raysGroup = null;
+    this.rayMats = [];
+    this.volumeMat = null;
   }
 }
 
@@ -263,6 +412,57 @@ function createGlowCanvas(color: string): HTMLCanvasElement {
   g.addColorStop(1, hexA(color, 0));
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, S, S);
+  return canvas;
+}
+
+/** A single vertical light ray — bright, soft base fading to nothing at the top. */
+function createRayCanvas(color: string): HTMLCanvasElement {
+  const W = 64;
+  const H = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+  // Vertical gradient: bright near the floor (bottom), fading up.
+  const g = ctx.createLinearGradient(0, H, 0, 0);
+  g.addColorStop(0, hexA('#ffffff', 0.85));
+  g.addColorStop(0.15, hexA(color, 0.8));
+  g.addColorStop(0.6, hexA(color, 0.28));
+  g.addColorStop(1, hexA(color, 0));
+  ctx.fillStyle = g;
+  // Soft-edged column (horizontal falloff) via a second multiply pass.
+  const h = ctx.createLinearGradient(0, 0, W, 0);
+  h.addColorStop(0, 'rgba(0,0,0,0)');
+  h.addColorStop(0.5, 'rgba(0,0,0,1)');
+  h.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = h;
+  ctx.fillRect(0, 0, W, H);
+  return canvas;
+}
+
+/** Soft translucent volumetric column that fills between the rays. */
+function createColumnCanvas(color: string): HTMLCanvasElement {
+  const W = 128;
+  const H = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createLinearGradient(0, H, 0, 0);
+  g.addColorStop(0, hexA(color, 0.5));
+  g.addColorStop(0.5, hexA(color, 0.16));
+  g.addColorStop(1, hexA(color, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  const h = ctx.createLinearGradient(0, 0, W, 0);
+  h.addColorStop(0, 'rgba(0,0,0,0)');
+  h.addColorStop(0.5, 'rgba(0,0,0,1)');
+  h.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = h;
+  ctx.fillRect(0, 0, W, H);
   return canvas;
 }
 
